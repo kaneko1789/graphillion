@@ -174,18 +174,20 @@ source code repository.
    https://github.com/takemaru/graphillion
 2. Unpack and change the directory to the source directory (it should have
    the file setup.py)
-3. Run `python -m build` to build
-4. (optional) Run `sh test_all.sh` to execute the tests
-5. Run `sudo pip install .` to install
+3. Run `pip install build` to install [build](https://packaging.python.org/en/latest/key_projects/#build) module, a PEP517 compatible Python package builder
+4. Run `python -m build` to build
+5. (optional) Run `sh test_all.sh` to execute the tests
+6. Run `sudo pip install .` to install
 
 #### GitHub repository
 
 1. Clone the Graphillion repository
    `git clone https://github.com/takemaru/graphillion.git`
 2. Change the directory to "graphillion"
-3. Run `python -m build` to build
-4. (optional) Run `sh test_all.sh` to execute the tests
-5. Run `sudo pip install .` to install
+3. Run `pip install build` to install [build](https://packaging.python.org/en/latest/key_projects/#build) module, a PEP517 compatible Python package builder
+4. Run `python -m build` to build
+5. (optional) Run `sh test_all.sh` to execute the tests
+6. Run `sudo pip install .` to install
 
 If you don't have permission to install software on your system, you
 can install it into another directory using the `-user`, `-prefix`, or
