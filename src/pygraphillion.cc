@@ -76,6 +76,24 @@ using std::vector;
 #define CHECK_SETSET_OR_ERROR(obj)                              \
   CHECK_OR_ERROR(obj, PySetset_Check, "setset", NULL);
 
+#define CATCH_ALL(value)                                               \
+  catch (const std::bad_alloc& e) {                                    \
+    PyErr_SetString(PyExc_MemoryError, __func__);                      \
+    return value;                                                      \
+  } catch (const std::overflow_error& e) {                             \
+    PyErr_SetString(PyExc_OverflowError,                               \
+      (std::string(e.what()) + " in " + __func__).c_str());            \
+    return value;                                                      \
+  } catch (const std::exception& e) {                                  \
+    PyErr_SetString(PyExc_RuntimeError,                                \
+      (std::string(e.what()) + " in " + __func__).c_str());            \
+    return value;                                                      \
+  } catch (...) {                                                      \
+    PyErr_SetString(PyExc_RuntimeError,                                \
+      (std::string("Unknown error occured in ") + __func__).c_str());  \
+    return value;                                                      \
+  }
+
 #define RETURN_NEW_OBJECT(py_type, expr)                         \
   do {                                                           \
     PySetsetObject* _ret = reinterpret_cast<PySetsetObject*>(    \
@@ -87,16 +105,29 @@ using std::vector;
     }                                                            \
     try {                                                        \
       _ret->ss = new setset(expr);                               \
+    } catch (const std::bad_alloc& e) {                          \
+      Py_DECREF(_ret);                                           \
+      Py_TYPE(_ret)->tp_free(reinterpret_cast<PyObject*>(_ret)); \
+      PyErr_SetString(PyExc_MemoryError, __func__);              \
+      return NULL;                                               \
+    } catch (const std::overflow_error& e) {                     \
+      Py_DECREF(_ret);                                           \
+      Py_TYPE(_ret)->tp_free(reinterpret_cast<PyObject*>(_ret)); \
+      PyErr_SetString(PyExc_OverflowError,                       \
+        (std::string(e.what()) + " in " + __func__).c_str());    \
+      return NULL;                                               \
     } catch (const std::exception& e) {                          \
       Py_DECREF(_ret);                                           \
       Py_TYPE(_ret)->tp_free(reinterpret_cast<PyObject*>(_ret)); \
-      PyErr_SetString(PyExc_RuntimeError, e.what());             \
+      PyErr_SetString(PyExc_RuntimeError,                        \
+        (std::string(e.what()) + " in " + __func__).c_str());    \
       return NULL;                                               \
     } catch (...) {                                              \
       Py_DECREF(_ret);                                           \
       Py_TYPE(_ret)->tp_free(reinterpret_cast<PyObject*>(_ret)); \
-      PyErr_SetString(PyExc_RuntimeError, "Unknown error "       \
-        "occured while creating a new setset");                  \
+      PyErr_SetString(PyExc_RuntimeError,                        \
+        (std::string("Unknown error occured while creating "     \
+          "a new setset in ") + __func__).c_str());              \
       return NULL;                                               \
     }                                                            \
     return reinterpret_cast<PyObject*>(_ret);                    \
@@ -116,18 +147,23 @@ using std::vector;
 #define RETURN_SELF_SETSET(self, other, _other, expr)                  \
   do {                                                                 \
     PySetsetObject* _other = reinterpret_cast<PySetsetObject*>(other); \
-    (expr);                                                            \
+    try {                                                              \
+      (expr);                                                          \
+    } CATCH_ALL(NULL);                                                 \
     Py_INCREF(self);                                                   \
     return reinterpret_cast<PyObject*>(self);                          \
   } while (0);
 
 #define RETURN_TRUE_IF(self, other, _other, expr)                       \
   do {                                                                  \
-    PySetsetObject* _other = reinterpret_cast<PySetsetObject*>(other); \
-    if (expr) Py_RETURN_TRUE;                                           \
-    else      Py_RETURN_FALSE;                                          \
+    PySetsetObject* _other = reinterpret_cast<PySetsetObject*>(other);  \
+    try {                                                               \
+      if (expr) Py_RETURN_TRUE;                                         \
+      else      Py_RETURN_FALSE;                                        \
+    } CATCH_ALL(NULL);                                                  \
   } while (0);
 
+// expr must not throw exception
 #define DO_FOR_MULTI(self, others, expr)                                \
   do {                                                                  \
     PyObject* _result = reinterpret_cast<PyObject*>(self);              \
@@ -153,6 +189,7 @@ using std::vector;
     return _result;                                                     \
   } while (0);
 
+// expr must not throw exception
 #define UPDATE_FOR_MULTI(self, others, expr)                           \
   do {                                                                 \
     for (Py_ssize_t _i = 0; _i < PyTuple_GET_SIZE(others); ++_i) {     \
@@ -168,26 +205,36 @@ using std::vector;
   } while (0);
 
 static PyObject* setset_build_set(const set<int>& s) {
-  PyObject* so = PySet_New(NULL);
-  if (so == NULL) {
-    PyErr_SetString(PyExc_RuntimeError, "Failed to create Python set");
-    return NULL;
-  }
-  for (set<int>::const_iterator e = s.begin(); e != s.end(); ++e) {
-    PyObject* eo = PyLong_FromLong(*e);
-    if (eo == NULL) {
-      PyErr_SetString(PyExc_TypeError, "not int set");
-      Py_DECREF(so);
+  PyObject* so = NULL;
+
+  try {
+    so = PySet_New(NULL);
+    if (so == NULL) {
+      PyErr_SetString(PyExc_RuntimeError, "Failed to create Python set");
       return NULL;
     }
-    if (PySet_Add(so, eo) == -1) {
-      PyErr_SetString(PyExc_RuntimeError, "can't add elements to a set");
+    for (set<int>::const_iterator e = s.begin(); e != s.end(); ++e) {
+      PyObject* eo = PyLong_FromLong(*e);
+      if (eo == NULL) {
+        PyErr_SetString(PyExc_TypeError, "not int set");
+        Py_DECREF(so);
+        return NULL;
+      }
+      if (PySet_Add(so, eo) == -1) {
+        PyErr_SetString(PyExc_RuntimeError, "can't add elements to a set");
+        Py_DECREF(eo);
+        Py_DECREF(so);
+        return NULL;
+      }
       Py_DECREF(eo);
-      Py_DECREF(so);
-      return NULL;
     }
-    Py_DECREF(eo);
+  } catch (...) {
+    if (so != NULL) {
+      Py_DECREF(so);
+    }
+    throw;
   }
+
   return so;
 }
 
@@ -196,30 +243,149 @@ static int setset_parse_set(PyObject* so, set<int>* s) {
   PyObject* i = PyObject_GetIter(so);
   if (i == NULL) return -1;
   PyObject* eo;
-  while ((eo = PyIter_Next(i))) {
-    if (!PyLong_Check(eo)) {
+
+  try {
+    while ((eo = PyIter_Next(i))) {
+      if (!PyLong_Check(eo)) {
+        Py_DECREF(eo);
+        Py_DECREF(i);
+        PyErr_SetString(PyExc_TypeError, "not int set");
+        return -1;
+      }
+      long value = PyLong_AsLong(eo);
       Py_DECREF(eo);
-      Py_DECREF(i);
-      PyErr_SetString(PyExc_TypeError, "not int set");
+      // error occurs in PyLong_AsLong
+      if (PyErr_Occurred()) {
+        Py_DECREF(i);
+        return -1;
+      }
+      s->insert(value);
+    }
+    Py_DECREF(i);
+    if (PyErr_Occurred()) { // error occurs in PyIter_Next
       return -1;
     }
-    long value = PyLong_AsLong(eo);
-    Py_DECREF(eo);
-    // error occurs in PyLong_AsLong
+  } catch (...) {
+    Py_DECREF(i);
+    throw;
+  }
+  return 0;
+}
+
+// is_float should be true if T is float or double
+template <typename T, bool is_float>
+static bool setset_parse_list(PyObject* weights,
+                              vector<T>* w) {
+  PyObject* i = PyObject_GetIter(weights);
+  if (i == NULL) return false;
+  PyObject* eo = NULL;
+
+  try {
+    while ((eo = PyIter_Next(i))) {
+      if (is_float && PyFloat_Check(eo)) {
+        double v = PyFloat_AsDouble(eo);
+        if (PyErr_Occurred()) {
+          Py_DECREF(eo);
+          Py_DECREF(i);
+          return false;
+        }
+        w->push_back(v);
+      }
+      else if (PyLong_Check(eo)) {
+        long value = PyLong_AsLong(eo);
+        if (PyErr_Occurred()) {
+          Py_DECREF(eo);
+          Py_DECREF(i);
+          return false;
+        }
+        w->push_back(static_cast<double>(value));
+      }
+      else {
+        Py_DECREF(eo);
+        Py_DECREF(i);
+        PyErr_SetString(PyExc_TypeError, "not a number");
+        return false;
+      }
+      Py_DECREF(eo);
+    }
+    Py_DECREF(i);
+    if (PyErr_Occurred()) { // error occurs in PyIter_Next
+      return false;
+    }
+  } catch (...) {
+    if (eo != NULL) {
+      Py_DECREF(eo);
+    }
+    Py_DECREF(i);
+    throw;
+  }
+  return true;
+}
+
+static bool setset_parse_string(PyObject* str_obj, std::string* s) {
+  if (str_obj == NULL || str_obj == Py_None) {
+    PyErr_SetString(PyExc_TypeError, "invalid argument");
+    return false;
+  }
+  if (PyUnicode_Check(str_obj)) {
+    Py_ssize_t size;
+    const char* str = PyUnicode_AsUTF8AndSize(str_obj, &size);
+    if (str == NULL) {
+      return false;
+    }
+    s->assign(str, size);
+  } else if (PyBytes_Check(str_obj)) {
+    Py_ssize_t size;
+    char* str;
+    if (PyBytes_AsStringAndSize(str_obj, &str, &size) == -1) {
+      return false;
+    }
+    s->assign(str, size);
+  } else {
+    PyErr_SetString(PyExc_TypeError, "not a string");
+    return false;
+  }
+  return true;
+}
+
+
+// std::string version
+static bool setset_parse_string_list(PyObject* seq,
+                                     vector<std::string>* w) {
+
+  if (seq == NULL || seq == Py_None) {
+    PyErr_SetString(PyExc_TypeError, "invalid argument");
+    return false;
+  }
+  PyObject* i = PyObject_GetIter(seq);
+  if (i == NULL) return false;
+  PyObject* eo = NULL;
+
+  try {
+    while ((eo = PyIter_Next(i))) {
+      std::string s;
+      if (!setset_parse_string(eo, &s)) {
+        Py_DECREF(eo);
+        Py_DECREF(i);
+        return false;
+      }
+      w->push_back(s);
+      Py_DECREF(eo);
+    }
+    // error occurs in PyIter_Next
     if (PyErr_Occurred()) {
       Py_DECREF(i);
-      return -1;
+      return false;
     }
-    s->insert(value);
-  }
-  // error occurs in PyIter_Next
-  if (PyErr_Occurred()) {
     Py_DECREF(i);
-    return -1;
+  } catch (...) {
+    if (eo != NULL) {
+      Py_DECREF(eo);
+    }
+    Py_DECREF(i);
+    throw;
   }
-
-  Py_DECREF(i);
-  return 0;
+  return true;
 }
 
 static vector<int> intersection(const map<string, vector<int> >& m,
@@ -244,47 +410,23 @@ static int setset_parse_map(PyObject* dict_obj, map<string, vector<int> >* m) {
   PyObject* lo;
   Py_ssize_t pos = 0;
   while (PyDict_Next(dict_obj, &pos, &key_obj, &lo)) {
-    if (!PyUnicode_Check(key_obj)) {
+    std::string key;
+    if (!setset_parse_string(key_obj, &key)) {
       PyErr_SetString(PyExc_TypeError, "invalid argument");
       return -1;
     }
-    const char* key_cstr = PyUnicode_AsUTF8(key_obj);
-    if (key_cstr == NULL) {
+    if (key.empty()) {
+      PyErr_SetString(PyExc_TypeError, "empty string");
       return -1;
     }
-    std::string key(key_cstr);
     if (key != "include" && key != "exclude") {
       PyErr_SetString(PyExc_TypeError, "invalid dict key");
       return -1;
     }
-    PyObject* i = PyObject_GetIter(lo);
-    if (i == NULL) return -1;
     vector<int> v;
-    PyObject* eo;
-    while ((eo = PyIter_Next(i))) {
-      if (!PyLong_Check(eo)) {
-        Py_DECREF(eo);
-        Py_DECREF(i);
-        PyErr_SetString(PyExc_TypeError, "not int");
-        return -1;
-      }
-      long value = PyLong_AsLong(eo);
-      Py_DECREF(eo);
-
-      // error occurs in PyLong_AsLong
-      if (PyErr_Occurred()) {
-        Py_DECREF(i);
-        return -1;
-      }
-
-      v.push_back(value);
-    }
-    // error occurs in PyIter_Next
-    if (PyErr_Occurred()) {
-      Py_DECREF(i);
+    if (!setset_parse_list<int, false>(lo, &v)) {
       return -1;
     }
-    Py_DECREF(i);
     (*m)[key] = v;
   }
   if (!intersection(*m, "include", "exclude").empty()) {
@@ -317,17 +459,19 @@ static void setsetiter_dealloc(PySetsetIterObject* self) {
 }
 
 static PyObject* setsetiter_next(PySetsetIterObject* self) {
-  if (*(self->it) == setset::end()) {
-    PyErr_SetNone(PyExc_StopIteration);
-    return NULL;
-  }
-  set<int> s = *(*self->it);
-  PyObject* py_set = setset_build_set(s);
-  if (py_set == NULL) {
-    return NULL;
-  }
-  ++(*self->it);
-  return py_set;
+  try {
+    if (*(self->it) == setset::end()) {
+      PyErr_SetNone(PyExc_StopIteration);
+      return NULL;
+    }
+    set<int> s = *(*self->it);
+    PyObject* py_set = setset_build_set(s);
+    if (py_set == NULL) {
+      return NULL;
+    }
+    ++(*self->it);
+    return py_set;
+  } CATCH_ALL(NULL);
 }
 
 static PyMethodDef setsetiter_methods[] = {
@@ -410,25 +554,32 @@ static int setset_init(PySetsetObject* self, PyObject* args, PyObject* kwds) {
       PySetsetObject* sso = reinterpret_cast<PySetsetObject*>(obj);
       self->ss = new setset(*(sso->ss));
     } else if (PyList_Check(obj)) {
+      vector<set<int> > vs; // define before PyObject_GetIter
+                            // because this statement may throw exception
       PyObject* i = PyObject_GetIter(obj);
       if (i == NULL) return -1;
-      vector<set<int> > vs;
       PyObject* o;
-      while ((o = PyIter_Next(i))) {
-        if (!PyAnySet_Check(o)) {
+      try {
+        while ((o = PyIter_Next(i))) {
+          if (!PyAnySet_Check(o)) {
+            Py_DECREF(o);
+            Py_DECREF(i);
+            PyErr_SetString(PyExc_TypeError, "not set");
+            return -1;
+          }
+          set<int> s;
+          if (setset_parse_set(o, &s) == -1) {
+            Py_DECREF(o);
+            Py_DECREF(i);
+            return -1;
+          }
+          vs.push_back(s);
           Py_DECREF(o);
-          Py_DECREF(i);
-          PyErr_SetString(PyExc_TypeError, "not set");
-          return -1;
         }
-        set<int> s;
-        if (setset_parse_set(o, &s) == -1) {
-          Py_DECREF(o);
-          Py_DECREF(i);
-          return -1;
-        }
-        vs.push_back(s);
+      } catch (...) {
         Py_DECREF(o);
+        Py_DECREF(i);
+        throw;
       }
       Py_DECREF(i);
 
@@ -446,10 +597,7 @@ static int setset_init(PySetsetObject* self, PyObject* args, PyObject* kwds) {
       PyErr_SetString(PyExc_TypeError, "invalid argument");
       return -1;
     }
-  } catch (...) {
-    PyErr_SetString(PyExc_RuntimeError, "Unexpected error occurred "
-    "during initialization");
-  }
+  } CATCH_ALL(-1);
   return 0;
 }
 
@@ -587,18 +735,24 @@ static PyObject* setset_issuperset(PySetsetObject* self, PyObject* other) {
 }
 
 static int setset_bool(PySetsetObject* self) {
-  return !self->ss->empty();
+  try {
+    return !self->ss->empty();
+  } CATCH_ALL(0);
+  return 0;
 }
 
 static Py_ssize_t setset_len(PyObject* obj) {
   PySetsetObject* self = reinterpret_cast<PySetsetObject*>(obj);
-  long long int len = strtoll(self->ss->size().c_str(), NULL, 0);
-  if (len != LLONG_MAX) {
-    return len;
-  } else {
-    PyErr_SetString(PyExc_OverflowError, "overflow, use obj.len()");
-    return -1;
-  }
+  try {
+    long long int len = strtoll(self->ss->size().c_str(), NULL, 0);
+    if (len != LLONG_MAX) {
+      return len;
+    } else {
+      PyErr_SetString(PyExc_OverflowError, "overflow, use obj.len()");
+      return -1;
+    }
+  } CATCH_ALL(-1);
+  return -1;
 }
 
 static PyObject* setset_len2(PySetsetObject* self, PyObject* args) {
@@ -607,28 +761,31 @@ static PyObject* setset_len2(PySetsetObject* self, PyObject* args) {
     PyErr_SetString(PyExc_TypeError, "invalid arguments. expected () or (int)");
     return NULL;
   }
-  if (obj == NULL || obj == Py_None) {
-    string size = self->ss->size();
-    vector<char> buf;
-    for (string::const_iterator c = size.begin(); c != size.end(); ++c)
-      buf.push_back(*c);
-    buf.push_back('\0');
-    PyObject* result = PyLong_FromString(buf.data(), NULL, 0);
-    if (result == NULL) {
-      PyErr_SetString(PyExc_ValueError, "Failed to convert size to integer");
+  try {
+    if (obj == NULL || obj == Py_None) {
+      string size = self->ss->size();
+      vector<char> buf;
+      for (string::const_iterator c = size.begin(); c != size.end(); ++c)
+        buf.push_back(*c);
+      buf.push_back('\0');
+      PyObject* result = PyLong_FromString(buf.data(), NULL, 0);
+      if (result == NULL) {
+        PyErr_SetString(PyExc_ValueError, "Failed to convert size to integer");
+        return NULL;
+      }
+      return result;
+    } else if (PyLong_Check(obj)) {
+      int len = PyLong_AsLong(obj);
+      if (PyErr_Occurred()) {
+        return NULL;
+      }
+      RETURN_NEW_OBJECT(Py_TYPE(self), self->ss->set_size(len));
+    } else {
+      PyErr_SetString(PyExc_TypeError, "not int");
       return NULL;
     }
-    return result;
-  } else if (PyLong_Check(obj)) {
-    int len = PyLong_AsLong(obj);
-    if (PyErr_Occurred()) {
-      return NULL;
-    }
-    RETURN_NEW_OBJECT(Py_TYPE(self), self->ss->set_size(len));
-  } else {
-    PyErr_SetString(PyExc_TypeError, "not int");
-    return NULL;
-  }
+  } CATCH_ALL(NULL);
+  return NULL;
 }
 
 static PyObject* setset_iter(PySetsetObject* self) {
@@ -637,18 +794,16 @@ static PyObject* setset_iter(PySetsetObject* self) {
     PyErr_NoMemory();
     return NULL;
   }
+  ssi->it = NULL;
   try {
-    ssi->it = new setset::iterator(self->ss->begin());
-  } catch (const std::exception& e) {
-    PyObject_Del(ssi);
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    PyObject_Del(ssi);
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occured "
-      "while creating iterator");
-    return NULL;
-  }
+    try {
+      ssi->it = new setset::iterator(self->ss->begin());
+    } catch (...) {
+      PyObject_Del(ssi);
+      throw;
+    }
+  } CATCH_ALL(NULL);
+
   if (ssi->it == NULL) {
     PyErr_NoMemory();
     return NULL;
@@ -665,17 +820,14 @@ static PyObject* setset_rand_iter(PySetsetObject* self) {
   ssi->it = NULL;
 
   try {
-    ssi->it = new setset::random_iterator(self->ss->begin_randomly());
-  } catch (const std::exception& e) {
-    PyObject_Del(ssi);
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    PyObject_Del(ssi);
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occured "
-      "while creating iterator");
-    return NULL;
-  }
+    try {
+      ssi->it = new setset::random_iterator(self->ss->begin_randomly());
+    } catch (...) {
+      PyObject_Del(ssi);
+      throw;
+    }
+  } CATCH_ALL(NULL);
+
   if (ssi->it == NULL) {
     PyErr_NoMemory();
     return NULL;
@@ -685,58 +837,27 @@ static PyObject* setset_rand_iter(PySetsetObject* self) {
 
 static PyObject* setset_optimize(PySetsetObject* self, PyObject* weights,
                                  bool is_maximizing) {
-  PyObject* i = PyObject_GetIter(weights);
-  if (i == NULL) return NULL;
-  PyObject* eo = NULL;
-  vector<double> w;
-  while ((eo = PyIter_Next(i))) {
-    if (PyFloat_Check(eo)) {
-      w.push_back(PyFloat_AsDouble(eo));
-    }
-    else if (PyLong_Check(eo)) {
-      long value = PyLong_AsLong(eo);
-      if (PyErr_Occurred()) {
-        return NULL;
-      }
-      w.push_back(static_cast<double>(value));
-    }
-    else {
-      Py_DECREF(eo);
-      Py_DECREF(i);
-      PyErr_SetString(PyExc_TypeError, "not a number");
+
+  PySetsetIterObject* ssi = NULL;
+  try {
+    vector<double> w;
+    if (!setset_parse_list<double, true>(weights, &w)) {
       return NULL;
     }
-    Py_DECREF(eo);
-  }
-  // error occurs in PyIter_Next
-  if (PyErr_Occurred()) {
-    Py_DECREF(i);
-    return NULL;
-  }
-  Py_DECREF(i);
-  PySetsetIterObject* ssi = PyObject_New(PySetsetIterObject, &PySetsetIter_Type);
-  if (ssi == NULL) {
-    PyErr_NoMemory();
-    return NULL;
-  }
 
-  try {
-    ssi->it = new setset::weighted_iterator(
-        is_maximizing ? self->ss->begin_from_max(w) : self->ss->begin_from_min(w));
-  } catch (const std::exception& e) {
-    PyObject_Del(ssi);
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    PyObject_Del(ssi);
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occured "
-      "while creating iterator");
-    return NULL;
-  }
-  if (ssi->it == NULL) {
-    PyErr_NoMemory();
-    return NULL;
-  }
+    ssi = PyObject_New(PySetsetIterObject, &PySetsetIter_Type);
+    if (ssi == NULL) {
+      PyErr_NoMemory();
+      return NULL;
+    }
+    try {
+      ssi->it = new setset::weighted_iterator(
+          is_maximizing ? self->ss->begin_from_max(w) : self->ss->begin_from_min(w));
+    } catch (...) {
+      PyObject_Del(ssi);
+      throw;
+    }
+  } CATCH_ALL(NULL);
   return reinterpret_cast<PyObject*>(ssi);
 }
 
@@ -750,93 +871,101 @@ static PyObject* setset_min_iter(PySetsetObject* self, PyObject* weights) {
 
 // If an item in o is equal to value, return 1, otherwise return 0. On error, return -1.
 static int setset_contains(PySetsetObject* self, PyObject* obj) {
-  if (PyAnySet_Check(obj)) {
-    set<int> s;
-    if (setset_parse_set(obj, &s) == -1) {
-      PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+  try {
+    if (PyAnySet_Check(obj)) {
+      set<int> s;
+      if (setset_parse_set(obj, &s) == -1) {
+        PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+        return -1;
+      }
+      return self->ss->find(s) != self->ss->end() ? 1 : 0;
+    } else if (PyLong_Check(obj)) {
+      int e = PyLong_AsLong(obj);
+      if (PyErr_Occurred()) {
+        return -1;
+      }
+      return self->ss->supersets(e) != setset() ? 1 : 0;
+    } else {
+      PyErr_SetString(PyExc_TypeError, "not set nor int");
       return -1;
     }
-    return self->ss->find(s) != self->ss->end() ? 1 : 0;
-  } else if (PyLong_Check(obj)) {
-    int e = PyLong_AsLong(obj);
-    if (PyErr_Occurred()) {
-      return -1;
-    }
-    return self->ss->supersets(e) != setset() ? 1 : 0;
-  } else {
-    PyErr_SetString(PyExc_TypeError, "not set nor int");
-    return -1;
-  }
+  } CATCH_ALL(-1);
 }
 
 static PyObject* setset_add(PySetsetObject* self, PyObject* obj) {
-  if (PyAnySet_Check(obj)) {
-    set<int> s;
-    if (setset_parse_set(obj, &s) == -1) {
-      PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+  try {
+    if (PyAnySet_Check(obj)) {
+      set<int> s;
+      if (setset_parse_set(obj, &s) == -1) {
+        PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+        return NULL;
+      }
+      self->ss->insert(s);
+    } else if (PyLong_Check(obj)) {
+      int e = PyLong_AsLong(obj);
+      if (PyErr_Occurred()) {
+        return NULL;
+      }
+      self->ss->insert(e);
+    } else {
+      PyErr_SetString(PyExc_TypeError, "not set nor int");
       return NULL;
     }
-    self->ss->insert(s);
-  } else if (PyLong_Check(obj)) {
-    int e = PyLong_AsLong(obj);
-    if (PyErr_Occurred()) {
-      return NULL;
-    }
-    self->ss->insert(e);
-  } else {
-    PyErr_SetString(PyExc_TypeError, "not set nor int");
-    return NULL;
-  }
-  Py_RETURN_NONE;
+    Py_RETURN_NONE;
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_remove(PySetsetObject* self, PyObject* obj) {
-  if (PyAnySet_Check(obj)) {
-    set<int> s;
-    if (setset_parse_set(obj, &s) == -1) {
-      PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+  try {
+    if (PyAnySet_Check(obj)) {
+      set<int> s;
+      if (setset_parse_set(obj, &s) == -1) {
+        PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+        return NULL;
+      }
+      if (self->ss->erase(s) == 0) {
+        PyErr_SetString(PyExc_KeyError, "not found");
+        return NULL;
+      }
+    } else if (PyLong_Check(obj)) {
+      int e = PyLong_AsLong(obj);
+      if (PyErr_Occurred()) {
+        return NULL;
+      }
+      if (self->ss->supersets(e).empty()) {
+        PyErr_SetString(PyExc_KeyError, "not found");
+        return NULL;
+      }
+      self->ss->erase(e);
+    } else {
+      PyErr_SetString(PyExc_TypeError, "not set nor int");
       return NULL;
     }
-    if (self->ss->erase(s) == 0) {
-      PyErr_SetString(PyExc_KeyError, "not found");
-      return NULL;
-    }
-  } else if (PyLong_Check(obj)) {
-    int e = PyLong_AsLong(obj);
-    if (PyErr_Occurred()) {
-      return NULL;
-    }
-    if (self->ss->supersets(e).empty()) {
-      PyErr_SetString(PyExc_KeyError, "not found");
-      return NULL;
-    }
-    self->ss->erase(e);
-  } else {
-    PyErr_SetString(PyExc_TypeError, "not set nor int");
-    return NULL;
-  }
-  Py_RETURN_NONE;
+    Py_RETURN_NONE;
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_discard(PySetsetObject* self, PyObject* obj) {
-  if (PyAnySet_Check(obj)) {
-    set<int> s;
-    if (setset_parse_set(obj, &s) == -1) {
-      PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+  try {
+    if (PyAnySet_Check(obj)) {
+      set<int> s;
+      if (setset_parse_set(obj, &s) == -1) {
+        PyErr_SetString(PyExc_TypeError, "Failed to parse the set");
+        return NULL;
+      }
+      self->ss->erase(s);
+    } else if (PyLong_Check(obj)) {
+      int e = PyLong_AsLong(obj);
+      if (PyErr_Occurred()) {
+        return NULL;
+      }
+      self->ss->erase(e);
+    } else {
+      PyErr_SetString(PyExc_TypeError, "not set nor int");
       return NULL;
     }
-    self->ss->erase(s);
-  } else if (PyLong_Check(obj)) {
-    int e = PyLong_AsLong(obj);
-    if (PyErr_Occurred()) {
-      return NULL;
-    }
-    self->ss->erase(e);
-  } else {
-    PyErr_SetString(PyExc_TypeError, "not set nor int");
-    return NULL;
-  }
-  Py_RETURN_NONE;
+    Py_RETURN_NONE;
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_pop(PySetsetObject* self) {
@@ -854,57 +983,56 @@ static PyObject* setset_pop(PySetsetObject* self) {
       return NULL;
     }
     return result;
-  } catch (const std::exception& e) {
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occured "
-      "in setset_pop");
-    return NULL;
-  }
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_clear(PySetsetObject* self) {
-  self->ss->clear();
-  Py_RETURN_NONE;
+  try {
+    self->ss->clear();
+    Py_RETURN_NONE;
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_flip(PySetsetObject* self, PyObject* args) {
-  PyObject* obj = NULL;
-  if (!PyArg_ParseTuple(args, "O", &obj)) return NULL;
-  if (obj == NULL || obj == Py_None) {
-    PyErr_SetString(PyExc_TypeError, "need arg e");
-    return NULL;
-  } else if (PyLong_Check(obj)) {
-    int e = PyLong_AsLong(obj);
-    if (PyErr_Occurred()) {
+  try {
+    PyObject* obj = NULL;
+    if (!PyArg_ParseTuple(args, "O", &obj)) return NULL;
+    if (obj == NULL || obj == Py_None) {
+      PyErr_SetString(PyExc_TypeError, "need arg e");
+      return NULL;
+    } else if (PyLong_Check(obj)) {
+      int e = PyLong_AsLong(obj);
+      if (PyErr_Occurred()) {
+        return NULL;
+      }
+      self->ss->flip(e);
+    } else {
+      PyErr_SetString(PyExc_TypeError, "not int");
       return NULL;
     }
-    self->ss->flip(e);
-  } else {
-    PyErr_SetString(PyExc_TypeError, "not int");
-    return NULL;
-  }
-  Py_RETURN_NONE;
+    Py_RETURN_NONE;
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_flip_all(PySetsetObject* self, PyObject* args) {
-  PyObject* obj = NULL;
-  if (!PyArg_ParseTuple(args, "O", &obj)) return NULL;
-  if (obj == NULL || obj == Py_None) {
-    PyErr_SetString(PyExc_TypeError, "need arg num_elems");
-    return NULL;
-  } else if (PyLong_Check(obj)) {
-    long num_elems = PyLong_AsLong(obj);
-    if (PyErr_Occurred()) {
+  try {
+    PyObject* obj = NULL;
+    if (!PyArg_ParseTuple(args, "O", &obj)) return NULL;
+    if (obj == NULL || obj == Py_None) {
+      PyErr_SetString(PyExc_TypeError, "need arg num_elems");
+      return NULL;
+    } else if (PyLong_Check(obj)) {
+      long num_elems = PyLong_AsLong(obj);
+      if (PyErr_Occurred()) {
+        return NULL;
+      }
+      self->ss->flip_all(static_cast<int>(num_elems));
+    } else {
+      PyErr_SetString(PyExc_TypeError, "not int");
       return NULL;
     }
-    self->ss->flip_all(static_cast<int>(num_elems));
-  } else {
-    PyErr_SetString(PyExc_TypeError, "not int");
-    return NULL;
-  }
-  Py_RETURN_NONE;
+    Py_RETURN_NONE;
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_minimal(PySetsetObject* self) {
@@ -1018,13 +1146,15 @@ static PyObject* setset_non_supersets(PySetsetObject* self, PyObject* obj) {
 }
 
 static PyObject* setset_choice(PySetsetObject* self) {
-  setset::iterator i = self->ss->begin();
-  if (i == self->ss->end()) {
-    PyErr_SetString(PyExc_KeyError, "'choice' from an empty set");
-    return NULL;
-  }
-  set<int> s = *i;
-  return setset_build_set(s);
+  try {
+    setset::iterator i = self->ss->begin();
+    if (i == self->ss->end()) {
+      PyErr_SetString(PyExc_KeyError, "'choice' from an empty set");
+      return NULL;
+    }
+    set<int> s = *i;
+    return setset_build_set(s);
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_probability(PySetsetObject* self,
@@ -1046,33 +1176,14 @@ static PyObject* setset_probability(PySetsetObject* self,
     return NULL;
   }
 
-  PyObject* i = PyObject_GetIter(probabilities);
-  if (i == NULL) return NULL;
-  PyObject* eo;
-  vector<double> p;
-  while ((eo = PyIter_Next(i))) {
-    if (PyFloat_Check(eo)) {
-      p.push_back(PyFloat_AsDouble(eo));
-    }
-    else if (PyLong_Check(eo)) {
-      long value = PyLong_AsLong(eo);
-      if (PyErr_Occurred()) {
-        Py_DECREF(eo);
-        Py_DECREF(i);
-        return NULL;
-      }
-      p.push_back(static_cast<double>(value));
-    }
-    else {
-      PyErr_SetString(PyExc_TypeError, "not a number");
-      Py_DECREF(eo);
-      Py_DECREF(i);
+  try {
+    vector<double> p;
+    if (!setset_parse_list<double, true>(probabilities, &p)) {
       return NULL;
     }
-    Py_DECREF(eo);
-  }
-  Py_DECREF(i);
-  return PyFloat_FromDouble(self->ss->probability(p, num_elems_a));
+
+    return PyFloat_FromDouble(self->ss->probability(p, num_elems_a));
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_dump(PySetsetObject* self, PyObject* obj) {
@@ -1086,9 +1197,18 @@ static PyObject* setset_dump(PySetsetObject* self, PyObject* obj) {
     PyErr_SetFromErrno(PyExc_OSError);
     return NULL;
   }
-  Py_BEGIN_ALLOW_THREADS;
-  self->ss->dump(fp);
-  Py_END_ALLOW_THREADS;
+  try {
+    try {
+      // comment out Py_BEGIN_ALLOW_THREADS
+      // because self->ss->dump is not thread-safe
+      //Py_BEGIN_ALLOW_THREADS;
+      self->ss->dump(fp);
+      //Py_END_ALLOW_THREADS;
+    } catch (...) {
+      fclose(fp); // we cannot check error
+      throw;
+    }
+  } CATCH_ALL(NULL);
   if (fclose(fp) != 0) {
     PyErr_SetFromErrno(PyExc_OSError);
     return NULL;
@@ -1097,9 +1217,12 @@ static PyObject* setset_dump(PySetsetObject* self, PyObject* obj) {
 }
 
 static PyObject* setset_dumps(PySetsetObject* self) {
-  stringstream sstr;
-  self->ss->dump(sstr);
-  return PyUnicode_FromString(sstr.str().c_str());
+  try {
+    stringstream sstr;
+    self->ss->dump(sstr);
+    // PyUnicode_FromString returns NULL on error
+    return PyUnicode_FromString(sstr.str().c_str());
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_load(PySetsetObject* self, PyObject* obj) {
@@ -1121,22 +1244,18 @@ static PyObject* setset_load(PySetsetObject* self, PyObject* obj) {
     return NULL;
   }
   try {
-    setset* loaded_ss;
-    Py_BEGIN_ALLOW_THREADS;
-    loaded_ss = new setset(setset::load(fp));
-    Py_END_ALLOW_THREADS;
-    ret->ss = loaded_ss;
-  } catch (const std::exception& e) {
-    Py_DECREF(ret);
-    fclose(fp);
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    Py_DECREF(ret);
-    fclose(fp);
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occurred");
-    return NULL;
-  }
+    try {
+      // comment out Py_BEGIN_ALLOW_THREADS
+      // because setset::load is not thread-safe
+      // Py_BEGIN_ALLOW_THREADS;
+      ret->ss = new setset(setset::load(fp));
+      // Py_END_ALLOW_THREADS;
+    } catch (...) {
+      Py_DECREF(ret);
+      fclose(fp);
+      throw;
+    }
+  } CATCH_ALL(NULL);
 
   if (fclose(fp) != 0) {
     PyErr_SetFromErrno(PyExc_OSError);
@@ -1147,11 +1266,7 @@ static PyObject* setset_load(PySetsetObject* self, PyObject* obj) {
 
 static PyObject* setset_loads(PySetsetObject* self, PyObject* obj) {
   CHECK_OR_ERROR(obj, PyUnicode_Check, "str", NULL);
-  const char* utf8_str = PyUnicode_AsUTF8(obj);
-  if (utf8_str == NULL) {
-    return NULL;
-  }
-  stringstream sstr(utf8_str);
+
   PySetsetObject* ret = reinterpret_cast<PySetsetObject*>(
       PySetset_Type.tp_alloc(&PySetset_Type, 0));
   if (ret == NULL) {
@@ -1159,16 +1274,19 @@ static PyObject* setset_loads(PySetsetObject* self, PyObject* obj) {
     return NULL;
   }
   try {
-    ret->ss = new setset(setset::load(sstr));
-  } catch (const std::exception& e) {
-    Py_DECREF(ret);
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    Py_DECREF(ret);
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occurred");
-    return NULL;
-  }
+    try {
+      const char* utf8_str = PyUnicode_AsUTF8(obj);
+      if (utf8_str == NULL) {
+        Py_DECREF(ret);
+        return NULL;
+      }
+      stringstream sstr(utf8_str);
+      ret->ss = new setset(setset::load(sstr));
+    } catch (...) {
+      Py_DECREF(ret);
+      throw;
+    }
+  } CATCH_ALL(NULL);
   return reinterpret_cast<PyObject*>(ret);
 }
 
@@ -1183,23 +1301,22 @@ static PyObject* setset_enum(PySetsetObject* self, PyObject* obj) {
     PyErr_SetFromErrno(PyExc_OSError);
     return NULL;
   }
-  string name = Py_TYPE(self)->tp_name;
-  string prefix = name + "([";
-  auto outer_pair = std::make_pair(prefix.c_str(), "])");
-  auto inner_pair = std::make_pair("set([", "])");
   try {
-    Py_BEGIN_ALLOW_THREADS;
-    self->ss->_enum(fp, outer_pair, inner_pair);
-    Py_END_ALLOW_THREADS;
-  } catch (const std::exception& e) {
-    fclose(fp);
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    fclose(fp);
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occurred");
-    return NULL;
-  }
+    string name = Py_TYPE(self)->tp_name;
+    string prefix = name + "([";
+    auto outer_pair = std::make_pair(prefix.c_str(), "])");
+    auto inner_pair = std::make_pair("set([", "])");
+    try {
+      // comment out Py_BEGIN_ALLOW_THREADS
+      // because self->ss->_enum is not thread-safe
+      // Py_BEGIN_ALLOW_THREADS;
+      self->ss->_enum(fp, outer_pair, inner_pair);
+      // Py_END_ALLOW_THREADS;
+    } catch (...) {
+      fclose(fp); // we cannot check error
+      throw;
+    }
+  } CATCH_ALL(NULL);
 
   if (fclose(fp) != 0) {
     PyErr_SetFromErrno(PyExc_OSError);
@@ -1209,29 +1326,24 @@ static PyObject* setset_enum(PySetsetObject* self, PyObject* obj) {
 }
 
 static PyObject* setset_enums(PySetsetObject* self) {
-  stringstream sstr;
-  string name = Py_TYPE(self)->tp_name;
-  string prefix = name + "([";
-  auto outer_pair = std::make_pair(prefix.c_str(), "])");
-  auto inner_pair = std::make_pair("set([", "])");
+  PyObject* result = NULL;
   try {
+    stringstream sstr;
+    string name = Py_TYPE(self)->tp_name;
+    string prefix = name + "([";
+    auto outer_pair = std::make_pair(prefix.c_str(), "])");
+    auto inner_pair = std::make_pair("set([", "])");
+
     self->ss->_enum(sstr, outer_pair, inner_pair);
-  } catch (const std::exception& e) {
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occurred");
-    return NULL;
-  }
-  PyObject* result = PyUnicode_FromString(sstr.str().c_str());
-  if (result == NULL) {
-    PyErr_SetString(PyExc_RuntimeError, "Failed to create Unicode string");
-    return NULL;
-  }
+
+    // PyUnicode_FromString returns NULL on error
+    result = PyUnicode_FromString(sstr.str().c_str());
+  } CATCH_ALL(NULL);
   return result;
 }
 
 static PyObject* setset_repr(PySetsetObject* self) {
+  // PyUnicode_FromFormat returns NULL on error
   return PyUnicode_FromFormat("<%s object of %p>", Py_TYPE(self)->tp_name,
                              reinterpret_cast<void*>(self->ss->id()));
 }
@@ -1251,26 +1363,28 @@ static PyObject* setset_richcompare(PySetsetObject* self, PyObject* obj, int op)
     return NULL;
   }
   sso = reinterpret_cast<PySetsetObject*>(obj);
-  switch (op) {
-    case Py_EQ:
-      if (*self->ss == *sso->ss) Py_RETURN_TRUE;
-      else Py_RETURN_FALSE;
-    case Py_NE:
-      if (*self->ss != *sso->ss) Py_RETURN_TRUE;
-      else Py_RETURN_FALSE;
-    case Py_LE:
-      if (*self->ss <= *sso->ss) Py_RETURN_TRUE;
-      else Py_RETURN_FALSE;
-    case Py_GE:
-      if (*self->ss >= *sso->ss) Py_RETURN_TRUE;
-      else Py_RETURN_FALSE;
-    case Py_LT:
-      if (*self->ss < *sso->ss) Py_RETURN_TRUE;
-      else Py_RETURN_FALSE;
-    case Py_GT:
-      if (*self->ss > *sso->ss) Py_RETURN_TRUE;
-      else Py_RETURN_FALSE;
-  }
+  try {
+    switch (op) {
+      case Py_EQ:
+        if (*self->ss == *sso->ss) Py_RETURN_TRUE;
+        else Py_RETURN_FALSE;
+      case Py_NE:
+        if (*self->ss != *sso->ss) Py_RETURN_TRUE;
+        else Py_RETURN_FALSE;
+      case Py_LE:
+        if (*self->ss <= *sso->ss) Py_RETURN_TRUE;
+        else Py_RETURN_FALSE;
+      case Py_GE:
+        if (*self->ss >= *sso->ss) Py_RETURN_TRUE;
+        else Py_RETURN_FALSE;
+      case Py_LT:
+        if (*self->ss < *sso->ss) Py_RETURN_TRUE;
+        else Py_RETURN_FALSE;
+      case Py_GT:
+        if (*self->ss > *sso->ss) Py_RETURN_TRUE;
+        else Py_RETURN_FALSE;
+    }
+  } CATCH_ALL(NULL);
   Py_INCREF(Py_NotImplemented);
   return Py_NotImplemented;
 }
@@ -1292,29 +1406,13 @@ static PyObject* setset_cost_le(PySetsetObject* self, PyObject* args, PyObject* 
   //  return NULL;
   //}
 
-  PyObject* cost_iter = PyObject_GetIter(costs_obj);
-  if (cost_iter == NULL) return NULL;
-  vector<bddcost> costs;
-  PyObject* cost;
-  while ((cost = PyIter_Next(cost_iter))) {
-    if (PyLong_Check(cost)) {
-      long value = PyLong_AsLong(cost);
-      Py_DECREF(cost);
-      if (PyErr_Occurred()) {
-        Py_DECREF(cost_iter);
-        return NULL;
-      }
-      costs.push_back(static_cast<int>(value));
-    } else {
-      Py_DECREF(cost);
-      Py_DECREF(cost_iter);
-      PyErr_SetString(PyExc_TypeError, "not a number");
+  try {
+    vector<bddcost> costs;
+    if (!setset_parse_list<bddcost, false>(costs_obj, &costs)) {
       return NULL;
     }
-  }
-  Py_DECREF(cost_iter);
-
-  RETURN_NEW_OBJECT(Py_TYPE(self), self->ss->cost_le(costs, cost_bound));
+    RETURN_NEW_OBJECT(Py_TYPE(self), self->ss->cost_le(costs, cost_bound));
+  } CATCH_ALL(NULL);
 }
 
 static PyObject* setset_remove_some_element(PySetsetObject* self) {
@@ -1347,83 +1445,85 @@ static PyObject* setset_remove_add_some_elements(PySetsetObject* self, PyObject*
     setset::max_elem() - num_variables + 1));
 }
 
-std::vector<std::vector<std::string>> parse_args_to_edges(PyObject* args) {
-  std::vector<std::vector<std::string>> edges;
-  assert(edges.size() == 0);
-  PyObject* edges_obj = NULL;
-  std::vector<std::vector<std::string>> empty_edges;
-  if (!PyArg_ParseTuple(args, "O!", &PyList_Type, &edges_obj))
-    return empty_edges;
-  if (edges_obj == NULL || edges_obj == Py_None) {
-    PyErr_SetString(PyExc_ValueError, "no edges");
-    return empty_edges;
-  }
+bool parse_args_to_edges(PyObject* args,
+                          std::vector<std::vector<std::string>>* edges) {
+  try {
+    assert(edges->size() == 0);
+    PyObject* edges_obj = NULL;
+    if (!PyArg_ParseTuple(args, "O!", &PyList_Type, &edges_obj))
+      return false;
+    if (edges_obj == NULL || edges_obj == Py_None) {
+      PyErr_SetString(PyExc_ValueError, "no edges");
+      return false;
+    }
 
-  int edge_num = PyList_Size(edges_obj);
-  edges.reserve(edge_num);
-  for (int i = 0; i < edge_num; ++i) {
-    PyObject *edge_obj = PyList_GetItem(edges_obj, i);
-    if (!PyList_Check(edge_obj)) {
-      PyErr_SetString(PyExc_TypeError, "Each edge must be a list");
-      return empty_edges;
-    }
-    if (PyList_Size(edge_obj) != 2) {
-      PyErr_SetString(PyExc_ValueError, "Each edge must have exactly two elements");
-      return empty_edges;
-    }
-    std::vector<std::string> edge(2);
-    for (int j = 0; j < 2; ++j) {
-      PyObject *v_obj = PyList_GetItem(edge_obj, j);
-      PyObject *v_repr = PyObject_Repr(v_obj);
-      if (v_repr == NULL) {
-        return empty_edges;
+    int edge_num = PyList_Size(edges_obj);
+    edges->reserve(edge_num);
+    for (int i = 0; i < edge_num; ++i) {
+      PyObject *edge_obj = PyList_GetItem(edges_obj, i);
+      if (!PyList_Check(edge_obj)) {
+        PyErr_SetString(PyExc_TypeError, "Each edge must be a list");
+        return false;
       }
-      const char *v = PyUnicode_AsUTF8(v_repr);
-      if (v == NULL) {
+      if (PyList_Size(edge_obj) != 2) {
+        PyErr_SetString(PyExc_ValueError, "Each edge must have exactly two elements");
+        return false;
+      }
+      std::vector<std::string> edge(2);
+      for (int j = 0; j < 2; ++j) {
+        PyObject *v_obj = PyList_GetItem(edge_obj, j);
+        PyObject *v_repr = PyObject_Repr(v_obj);
+        if (v_repr == NULL) {
+          return false;
+        }
+        try {
+          if (!setset_parse_string(v_repr, &edge[j])) {
+            Py_DECREF(v_repr);
+            return false;
+          }
+        } catch (...) {
+          Py_DECREF(v_repr);
+          throw;
+        }
         Py_DECREF(v_repr);
-        return empty_edges;
       }
-      edge[j] = std::string(v);
-      Py_DECREF(v_repr);
+      edges->push_back(std::move(edge));
     }
-    edges.push_back(std::move(edge));
-  }
-  return edges;
+  } CATCH_ALL(false);
+  return true;
 }
 
 static PyObject* setset_to_vss_convert(PySetsetObject* self, PyObject* args, bool is_evss) {
-  std::vector<std::vector<std::string>> edges = parse_args_to_edges(args);
-  if (PyErr_Occurred()) {
-    return NULL;
-  }
-  if (edges.size() == 0) {
-    PyErr_SetString(PyExc_ValueError, "Graph is empty");
-    return NULL;
-  }
-  PySetsetObject* ret = reinterpret_cast<PySetsetObject*>
-      (PySetset_Type.tp_alloc(&PySetset_Type, 0));
-  if (ret == NULL) {
-    PyErr_SetString(PyExc_MemoryError, "Failed to allocate "
-        "memory for PySetsetObject");
-    return NULL;
-  }
+  PySetsetObject* ret = NULL;
   try {
-    if (is_evss) {
-      auto ss = self->ss->to_edgevertexsetset_setset(edges);
-      ret->ss = new setset(ss);
-    } else {
-      auto ss = self->ss->to_vertexsetset_setset(edges);
-      ret->ss = new setset(ss);
+    std::vector<std::vector<std::string>> edges;
+    if (!parse_args_to_edges(args, &edges)) {
+      return NULL;
     }
-  } catch (const std::exception& e) {
-    Py_DECREF(ret);
-    PyErr_SetString(PyExc_RuntimeError, e.what());
-    return NULL;
-  } catch (...) {
-    Py_DECREF(ret);
-    PyErr_SetString(PyExc_RuntimeError, "Unknown error occurred");
-    return NULL;
-  }
+    if (edges.size() == 0) {
+      PyErr_SetString(PyExc_ValueError, "Graph is empty");
+      return NULL;
+    }
+    ret = reinterpret_cast<PySetsetObject*>
+        (PySetset_Type.tp_alloc(&PySetset_Type, 0));
+    if (ret == NULL) {
+      PyErr_SetString(PyExc_MemoryError, "Failed to allocate "
+          "memory for PySetsetObject");
+      return NULL;
+    }
+    try {
+      if (is_evss) {
+        setset ss = self->ss->to_edgevertexsetset_setset(edges);
+        ret->ss = new setset(ss);
+      } else {
+        setset ss = self->ss->to_vertexsetset_setset(edges);
+        ret->ss = new setset(ss);
+      }
+    } catch (...) {
+      Py_DECREF(ret);
+      throw;
+    }
+  } CATCH_ALL(NULL);
 
   return reinterpret_cast<PyObject*>(ret);
 }
@@ -1609,7 +1709,9 @@ PyTypeObject PySetset_Type = {
 };
 
 static PyObject* setset_elem_limit(PyObject*) {
-  return PyLong_FromLong(setset::elem_limit());
+  try {
+    return PyLong_FromLong(setset::elem_limit());
+  } CATCH_ALL(NULL);
 }
 
 //static PyObject* setset_num_elems(PyObject*, PyObject* args) {
@@ -1634,43 +1736,40 @@ static bool translate_graph(PyObject* graph_obj,
   if (i == NULL) return false;
   PyObject* eo;
   while ((eo = PyIter_Next(i))) {
-    PyObject* j = PyObject_GetIter(eo);
-    Py_DECREF(eo);
-    if (j == NULL) {
-      Py_DECREF(i);
-      return false;
-    }
-    vector<string> e;
-    PyObject* vo;
-    while ((vo = PyIter_Next(j))) {
-      if (!PyBytes_Check(vo) && !PyUnicode_Check(vo)) {
-        Py_DECREF(vo);
-        Py_DECREF(j);
+    try {
+      vector<string> e;
+      if (!setset_parse_string_list(eo, &e)) {
+        Py_DECREF(eo);
         Py_DECREF(i);
-        PyErr_SetString(PyExc_TypeError, "invalid graph");
         return false;
       }
-      string v = PyBytes_Check(vo) ? PyBytes_AsString(vo) : PyUnicode_AsUTF8(vo);
-      Py_DECREF(vo);
-      if (v.find(',') != string::npos) {
-        Py_DECREF(j);
-        Py_DECREF(i);
-        PyErr_SetString(PyExc_TypeError, "invalid vertex in the graph");
-        return false;
-      }
-      e.push_back(v);
-    }
-    Py_DECREF(j);
 
-    if (e.size() != 2) {
+      if (e.size() != 2) {
+        Py_DECREF(eo);
+        Py_DECREF(i);
+        PyErr_SetString(PyExc_TypeError, "each edge must have "
+          "exactly two vertices");
+        return false;
+      }
+      for (size_t j = 0; j < e.size(); ++j) {
+        if (e[j].find(',') != string::npos) {
+          Py_DECREF(eo);
+          Py_DECREF(i);
+          PyErr_SetString(PyExc_TypeError, "invalid vertex in the graph");
+          return false;
+        }
+      }
+      graph.push_back(make_pair(e[0], e[1]));
+    } catch (...) {
+      Py_DECREF(eo);
       Py_DECREF(i);
-      PyErr_SetString(PyExc_TypeError, "each edge must have "
-        "exactly two vertices");
-      return false;
+      throw;
     }
-    graph.push_back(make_pair(e[0], e[1]));
   }
   Py_DECREF(i);
+  if (PyErr_Occurred()) { // check the error of PyIter_Next(i)
+    return false;
+  }
   return true;
 }
 
@@ -1680,17 +1779,17 @@ static bool get_string_from_sequence(PyObject* obj, int index, string* str) {
   if (i == NULL) {
     return false;
   }
-  if (!PyBytes_Check(i)) {
+  try {
+    if (!setset_parse_string(i, str)) {
+      Py_DECREF(i);
+      return false;
+    }
+  } catch (...) {
     Py_DECREF(i);
-    return false;
-  }
-  const char* s = PyBytes_AsString(i);
-  if (s == NULL) {
-    Py_DECREF(i);
-    return false;
+    throw;
   }
   Py_DECREF(i);
-  *str = string(s);
+  
   return true;
 }
 
@@ -1714,6 +1813,205 @@ static bool get_double_from_sequence(PyObject* obj, int index, double* value) {
   return true;
 }
 
+static bool graphset_graphs_parse_vertex_groups(PyObject* vertex_groups_obj,
+                                                vector<vector<string> >* vertex_groups
+                                                ) {
+  PyObject* i = PyObject_GetIter(vertex_groups_obj);
+  if (i == NULL) return false;
+  PyObject* uo;
+  while ((uo = PyIter_Next(i))) {
+    PyObject* j = PyObject_GetIter(uo);
+    Py_DECREF(uo);
+    if (j == NULL) {
+      Py_DECREF(i);
+      return false;
+    }
+    try {
+      vector<string> v;
+      if (!setset_parse_string_list(j, &v)) {
+        Py_DECREF(j);
+        Py_DECREF(i);
+        return false;
+      }
+      vertex_groups->push_back(v);
+    } catch (...) {
+      Py_DECREF(j);
+      Py_DECREF(i);
+      throw;
+    }
+    Py_DECREF(j);
+  }
+  Py_DECREF(i);
+  if (PyErr_Occurred()) { // check the error of PyIter_Next(i)
+    return false;
+  }
+  return true;
+}
+
+static bool graphset_graphs_parse_degree_constraints(
+    PyObject* degree_constraints_obj,
+    map<string, Range>* degree_constraints) {
+  PyObject* vo;
+  PyObject* lo;
+  Py_ssize_t pos = 0;
+  while (PyDict_Next(degree_constraints_obj, &pos, &vo, &lo)) {
+    std::string vertex;
+    if (!setset_parse_string(vo, &vertex)) {
+      PyErr_SetString(PyExc_TypeError, "error converting vertex to string");
+      return false;
+    }
+    vector<int> r;
+    if (!setset_parse_list<int, false>(lo, &r)) {
+      PyErr_SetString(PyExc_TypeError, "error converting degree constraints");
+      return false;
+    }
+
+    if (r.size() < 3) {
+      PyErr_SetString(PyExc_ValueError, "degree constraints must have at least 3 values");
+      return false;
+    }
+    (*degree_constraints)[vertex] = Range(r[0], r[1], r[2]);
+  }
+  return true;
+}
+
+static bool graphset_graphs_parse_num_edges(
+    PyObject* num_edges_obj,
+    Range* num_edges) {
+  vector<int> r;
+  if (!setset_parse_list<int, false>(num_edges_obj, &r)) {
+    PyErr_SetString(PyExc_TypeError, "error converting num_edges");
+    return false;
+  }
+  if (r.size() < 3) {
+    PyErr_SetString(PyExc_ValueError, "num_edges must have at least 3 values");
+    return false;
+  }
+  *num_edges = Range(r[0], r[1], r[2]);
+  return true;
+}
+
+static bool graphset_graphs_parse_ssd_list(PyObject* j, 
+    vector<pair<pair<string, string>, double> >* expr) {
+
+  PyObject* eo;
+  while ((eo = PyIter_Next(j))) {
+    string u, v;
+    double w;
+    try {
+      if (!get_string_from_sequence(eo, 0, &u)
+          || !get_string_from_sequence(eo, 1, &v)
+          || !get_double_from_sequence(eo, 2, &w)) {
+        Py_DECREF(eo);
+        return false;
+      }
+      /*PyObject* uo = PySequence_GetItem(eo, 0);
+      string u = PyBytes_AsString(uo);
+      PyObject* vo = PySequence_GetItem(eo, 1);
+      if (vo == NULL || !PyBytes_Check(vo)) return NULL;
+      string v = PyBytes_AsString(vo);
+      PyObject* wo = PySequence_GetItem(eo, 2);
+      if (wo == NULL || !PyFloat_Check(wo)) return NULL;
+      double w = PyFloat_AsDouble(wo);*/
+      expr->push_back(make_pair(make_pair(u, v), w));
+    } catch (...) {
+      Py_DECREF(eo);
+      throw;
+    }
+    Py_DECREF(eo);
+  }
+  if (PyErr_Occurred()) { // check the error of PyIter_Next(j)
+    return false;
+  }
+  return true;
+}
+
+static bool graphset_graphs_parse_dd_list(PyObject* co,
+    pair<double, double>* range) {
+  PyObject* ro = PySequence_GetItem(co, 1);
+  
+  if (ro == NULL) {
+    return false;
+  }
+  /*PyObject* r0o = PySequence_GetItem(ro, 0);
+  if (r0o == NULL || !PyFloat_Check(r0o)) return NULL;
+  range.first = PyFloat_AsDouble(r0o);
+  PyObject* r1o = PySequence_GetItem(ro, 1);
+  if (r1o == NULL || !PyFloat_Check(r1o)) return NULL;
+  range.second = PyFloat_AsDouble(r1o);*/
+  try {
+    if (!get_double_from_sequence(ro, 0, &range->first)
+        || !get_double_from_sequence(ro, 1, &range->second)) {
+      Py_DECREF(ro);
+      return false;
+    }
+  } catch (...) {
+    Py_DECREF(ro);
+    throw;
+  }
+  Py_DECREF(ro);
+  return true;
+}
+
+static bool graphset_graphs_parse_linear_constraints(
+    PyObject* linear_constraints_obj,
+    vector<linear_constraint_t>* linear_constraints) {
+
+  PyObject* i = PyObject_GetIter(linear_constraints_obj);
+  if (i == NULL) return false;
+  PyObject* co;
+  while ((co = PyIter_Next(i))) {
+    PyObject* j = NULL;
+    try {
+      linear_constraints->push_back(linear_constraint_t());
+      linear_constraint_t& c = linear_constraints->back();
+      vector<weighted_edge_t>& expr = c.first;
+      pair<double,double>& range = c.second;
+      PyObject* lo = PySequence_GetItem(co, 0);
+      if (lo == NULL) {
+        Py_DECREF(co);
+        Py_DECREF(i);
+        return false;
+      }
+      j = PyObject_GetIter(lo);
+      Py_DECREF(lo);
+      if (j == NULL) {
+        Py_DECREF(co);
+        Py_DECREF(i);
+        return false;
+      }
+
+      if (!graphset_graphs_parse_ssd_list(j, &expr)) {
+        Py_DECREF(j);
+        Py_DECREF(co);
+        Py_DECREF(i);
+        return false;
+      }
+
+      if (!graphset_graphs_parse_dd_list(co, &range)) {
+        Py_DECREF(j);
+        Py_DECREF(co);
+        Py_DECREF(i);
+        return false;
+      }
+      Py_DECREF(j);
+      Py_DECREF(co);
+    } catch (...) {
+      if (j != NULL) {
+        Py_DECREF(j);
+      }
+      Py_DECREF(co);
+      Py_DECREF(i);
+      throw;
+    }
+  }
+  Py_DECREF(i);
+  if (PyErr_Occurred()) { // check the error of PyIter_Next(i)
+    return false;
+  }
+  return true;
+}
+
 static PyObject* graphset_graphs(PyObject*, PyObject* args, PyObject* kwds) {
   static char s1[] = "graph";
   static char s2[] = "vertex_groups";
@@ -1731,240 +2029,73 @@ static PyObject* graphset_graphs(PyObject*, PyObject* args, PyObject* kwds) {
   int num_comps = -1, no_loop = 0;
   PyObject* search_space_obj = NULL;
   PyObject* linear_constraints_obj = NULL;
-  if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|OOOiiOO", kwlist, &graph_obj,
-                                   &vertex_groups_obj, &degree_constraints_obj,
-                                   &num_edges_obj, &num_comps, &no_loop,
-                                   &search_space_obj, &linear_constraints_obj))
-    return NULL;
 
-  vector<pair<string, string> > graph;
-  if (!translate_graph(graph_obj, graph)) {
-    PyErr_SetString(PyExc_ValueError, "Failed to translate graph object");
-    return NULL;
-  }
+  try {
+    setset ss;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|OOOiiOO", kwlist, &graph_obj,
+                                    &vertex_groups_obj, &degree_constraints_obj,
+                                    &num_edges_obj, &num_comps, &no_loop,
+                                    &search_space_obj, &linear_constraints_obj))
+      return NULL;
 
-  vector<vector<string> > vertex_groups_entity;
-  vector<vector<string> >* vertex_groups = NULL;
-  if (vertex_groups_obj != NULL && vertex_groups_obj != Py_None) {
-    vertex_groups = &vertex_groups_entity;
-    PyObject* i = PyObject_GetIter(vertex_groups_obj);
-    if (i == NULL) return NULL;
-    PyObject* uo;
-    while ((uo = PyIter_Next(i))) {
-      PyObject* j = PyObject_GetIter(uo);
-      Py_DECREF(uo);
-      if (j == NULL) {
-        Py_DECREF(i);
-        return NULL;
-      }
-      vector<string> v;
-      PyObject* vo;
-      while ((vo = PyIter_Next(j))) {
-        if (!PyBytes_Check(vo)) {
-          Py_DECREF(vo);
-          Py_DECREF(j);
-          Py_DECREF(i);
-          PyErr_SetString(PyExc_TypeError, "invalid vertex groups");
-          return NULL;
-        }
-        const char* vertex = PyBytes_AsString(vo);
-        if (vertex == NULL) {
-          Py_DECREF(vo);
-          Py_DECREF(j);
-          Py_DECREF(i);
-          return NULL;
-        }
-        v.push_back(string(vertex));
-        Py_DECREF(vo);
-      }
-      if (PyErr_Occurred()) { // check the error of PyIter_Next(j)
-        Py_DECREF(j);
-        Py_DECREF(i);
-        return NULL;
-      }
-      Py_DECREF(j);
-      vertex_groups->push_back(v);
-    }
-    if (PyErr_Occurred()) { // check the error of PyIter_Next(i)
-      Py_DECREF(i);
+    vector<pair<string, string> > graph;
+    if (!translate_graph(graph_obj, graph)) {
+      PyErr_SetString(PyExc_ValueError, "Failed to translate graph object");
       return NULL;
     }
-    Py_DECREF(i);
-  }
 
-  map<string, Range> degree_constraints_entity;
-  map<string, Range>* degree_constraints = NULL;
-  if (degree_constraints_obj != NULL && degree_constraints_obj != Py_None) {
-    degree_constraints = &degree_constraints_entity;
-    PyObject* vo;
-    PyObject* lo;
-    Py_ssize_t pos = 0;
-    while (PyDict_Next(degree_constraints_obj, &pos, &vo, &lo)) {
-      if (!PyBytes_Check(vo)) {
-        PyErr_SetString(PyExc_TypeError, "invalid vertex in degree constraints");
+    vector<vector<string> > vertex_groups_entity;
+    vector<vector<string> >* vertex_groups = NULL;
+    if (vertex_groups_obj != NULL && vertex_groups_obj != Py_None) {
+      vertex_groups = &vertex_groups_entity;
+      if (!graphset_graphs_parse_vertex_groups(vertex_groups_obj, vertex_groups)) {
+        PyErr_SetString(PyExc_ValueError, "Failed to parse vertex groups");
         return NULL;
       }
-      const char* vertex_p = PyBytes_AsString(vo);
-      if (vertex_p == NULL) {
-        PyErr_SetString(PyExc_TypeError, "error converting vertex to string");
-        return NULL;
-      }
-      string vertex(vertex_p);
-      PyObject* i = PyObject_GetIter(lo);
-      if (i == NULL) return NULL;
-      vector<int> r;
-      PyObject* io;
-      while ((io = PyIter_Next(i))) {
-        if (!PyLong_Check(io)) {
-          Py_DECREF(io);
-          Py_DECREF(i);
-          PyErr_SetString(PyExc_TypeError, "invalid degree in degree constraints");
-          return NULL;
-        }
-        long value = PyLong_AsLong(io);
-        Py_DECREF(io);
-        if (PyErr_Occurred()) {
-          Py_DECREF(i);
-          return NULL;
-        }
-        r.push_back(value);
-      }
-      if (PyErr_Occurred()) { // check the error of PyIter_Next(i)
-        Py_DECREF(i);
-        return NULL;
-      }
-      Py_DECREF(i);
-      if (r.size() < 3) {
-        PyErr_SetString(PyExc_ValueError, "degree constraints must have at least 3 values");
-        return NULL;
-      }
-      (*degree_constraints)[vertex] = Range(r[0], r[1], r[2]);
     }
-  }
 
-  Range num_edges_entity;
-  Range* num_edges = NULL;
-  if (num_edges_obj != NULL && num_edges_obj != Py_None) {
-    num_edges = &num_edges_entity;
-    vector<int> r;
-    PyObject* i = PyObject_GetIter(num_edges_obj);
-    if (i == NULL) return NULL;
-    PyObject* io;
-    while ((io = PyIter_Next(i))) {
-      if (!PyLong_Check(io)) {
-        Py_DECREF(io);
-        Py_DECREF(i);
-        PyErr_SetString(PyExc_TypeError, "invalid number of edges");
+    map<string, Range> degree_constraints_entity;
+    map<string, Range>* degree_constraints = NULL;
+    if (degree_constraints_obj != NULL && degree_constraints_obj != Py_None) {
+      degree_constraints = &degree_constraints_entity;
+      if (!graphset_graphs_parse_degree_constraints(
+          degree_constraints_obj, degree_constraints)) {
+        PyErr_SetString(PyExc_ValueError, "Failed to parse degree constraints");
         return NULL;
       }
-      long value = PyLong_AsLong(io);
-      Py_DECREF(io);
-      if (PyErr_Occurred()) {
-        Py_DECREF(i);
-        return NULL;
-      }
-      r.push_back(value);
     }
-    if (PyErr_Occurred()) { // check the error of PyIter_Next(i)
-      Py_DECREF(i);
-      return NULL;
-    }
-    Py_DECREF(i);
-    if (r.size() < 3) {
-      PyErr_SetString(PyExc_ValueError, "num_edges must have at least 3 values");
-      return NULL;
-    }
-    *num_edges = Range(r[0], r[1], r[2]);
-  }
 
-  setset* search_space = NULL;
-  if (search_space_obj != NULL && search_space_obj != Py_None)
-    search_space = reinterpret_cast<PySetsetObject*>(search_space_obj)->ss;
-
-  vector<linear_constraint_t> linear_constraints_entity;
-  vector<linear_constraint_t>* linear_constraints = NULL;
-  if (linear_constraints_obj != NULL && linear_constraints_obj != Py_None) {
-    linear_constraints = &linear_constraints_entity;
-    PyObject* i = PyObject_GetIter(linear_constraints_obj);
-    if (i == NULL) return NULL;
-    PyObject* co;
-    while ((co = PyIter_Next(i))) {
-      linear_constraints->push_back(linear_constraint_t());
-      linear_constraint_t& c = linear_constraints->back();
-      vector<weighted_edge_t>& expr = c.first;
-      pair<double,double>& range = c.second;
-      PyObject* lo = PySequence_GetItem(co, 0);
-      if (lo == NULL) {
-        Py_DECREF(co);
-        Py_DECREF(i);
+    Range num_edges_entity;
+    Range* num_edges = NULL;
+    if (num_edges_obj != NULL && num_edges_obj != Py_None) {
+      num_edges = &num_edges_entity;
+      if (!graphset_graphs_parse_num_edges(num_edges_obj, num_edges)) {
+        PyErr_SetString(PyExc_ValueError, "Failed to parse num_edges");
         return NULL;
       }
-      PyObject* j = PyObject_GetIter(lo);
-      Py_DECREF(lo);
-      if (j == NULL) {
-        Py_DECREF(co);
-        Py_DECREF(i);
-        return NULL;
-      }
-      PyObject* eo = NULL;
-      while ((eo = PyIter_Next(j))) {
-        string u, v;
-        double w;
-        if (!get_string_from_sequence(eo, 0, &u)
-            || !get_string_from_sequence(eo, 1, &v)
-            || !get_double_from_sequence(eo, 2, &w)) {
-          Py_DECREF(eo);
-          Py_DECREF(j);
-          Py_DECREF(i);
-          return NULL;
-        }
-        /*PyObject* uo = PySequence_GetItem(eo, 0);
-        string u = PyBytes_AsString(uo);
-        PyObject* vo = PySequence_GetItem(eo, 1);
-        if (vo == NULL || !PyBytes_Check(vo)) return NULL;
-        string v = PyBytes_AsString(vo);
-        PyObject* wo = PySequence_GetItem(eo, 2);
-        if (wo == NULL || !PyFloat_Check(wo)) return NULL;
-        double w = PyFloat_AsDouble(wo);*/
-        expr.push_back(make_pair(make_pair(u, v), w));
-      }
-      Py_DECREF(j);
-      if (PyErr_Occurred()) { // check the error of PyIter_Next(j)
-        Py_DECREF(co);
-        Py_DECREF(i);
-        return NULL;
-      }
-      PyObject* ro = PySequence_GetItem(co, 1);
-      Py_DECREF(co);
-      if (ro == NULL) {
-        Py_DECREF(i);
-        return NULL;
-      }
-      /*PyObject* r0o = PySequence_GetItem(ro, 0);
-      if (r0o == NULL || !PyFloat_Check(r0o)) return NULL;
-      range.first = PyFloat_AsDouble(r0o);
-      PyObject* r1o = PySequence_GetItem(ro, 1);
-      if (r1o == NULL || !PyFloat_Check(r1o)) return NULL;
-      range.second = PyFloat_AsDouble(r1o);*/
-      if (!get_double_from_sequence(ro, 0, &range.first)
-          || !get_double_from_sequence(ro, 1, &range.second)) {
-        Py_DECREF(ro);
-        Py_DECREF(i);
-        return NULL;
-      }
-      Py_DECREF(ro);
     }
-    Py_DECREF(i);
-    if (PyErr_Occurred()) { // check the error of PyIter_Next(i)
-      return NULL;
+
+    setset* search_space = NULL;
+    if (search_space_obj != NULL && search_space_obj != Py_None)
+      search_space = reinterpret_cast<PySetsetObject*>(search_space_obj)->ss;
+
+    vector<linear_constraint_t> linear_constraints_entity;
+    vector<linear_constraint_t>* linear_constraints = NULL;
+    if (linear_constraints_obj != NULL && linear_constraints_obj != Py_None) {
+      linear_constraints = &linear_constraints_entity;
+      if (!graphset_graphs_parse_linear_constraints(
+          linear_constraints_obj, linear_constraints)) {
+        PyErr_SetString(PyExc_ValueError, "Failed to parse linear constraints");
+        return NULL;
+      }
     }
-  }
 
-  setset ss = SearchGraphs(graph, vertex_groups, degree_constraints, num_edges,
-                           num_comps, no_loop, search_space,
-                           linear_constraints);
-
-  RETURN_NEW_SETSET(ss);
+    ss = SearchGraphs(graph, vertex_groups, degree_constraints, num_edges,
+                            num_comps, no_loop, search_space,
+                            linear_constraints);
+    RETURN_NEW_SETSET(ss);
+  } CATCH_ALL(NULL);
+  return NULL; // never come here
 }
 
 static PyObject* graphset_show_messages(PySetsetObject* self, PyObject* obj) {
@@ -1996,6 +2127,9 @@ static PyObject* graphset_omp_set_num_threads(PyObject*, PyObject* obj) {
     return NULL;
   }
   long value = PyLong_AsLong(obj);
+  if (PyErr_Occurred()) {
+    return NULL;
+  }
   omp_set_num_threads(value);
 #endif
   Py_RETURN_NONE;
@@ -2266,16 +2400,11 @@ static PyObject* balanced_partitions(PyObject*, PyObject* args, PyObject* kwds) 
     PyObject* valObject;
     Py_ssize_t pos = 0;
     while (PyDict_Next(weight_list_obj, &pos, &keyObject, &valObject)) {
-      if (!PyBytes_Check(keyObject)) {
+      std::string vertex;
+      if (!setset_parse_string(keyObject, &vertex)) {
         PyErr_SetString(PyExc_TypeError, "invalid vertex in weight list");
         return NULL;
       }
-      const char* vertex_p = PyBytes_AsString(keyObject);
-      if (vertex_p == NULL) {
-        PyErr_SetString(PyExc_ValueError, "invalid vertex in weight list");
-        return NULL;
-      }
-      string vertex(vertex_p);
       if (!PyLong_Check(valObject)) {
         PyErr_SetString(PyExc_TypeError, "invalid weight in weight list");
         return NULL;
@@ -2353,16 +2482,11 @@ static PyObject* weighted_induced_graphs(PyObject*, PyObject* args,
     PyObject* valObject;
     Py_ssize_t pos = 0;
     while (PyDict_Next(weight_list_obj, &pos, &keyObject, &valObject)) {
-      if (!PyBytes_Check(keyObject)) {
+      std::string vertex;
+      if (!setset_parse_string(keyObject, &vertex)) {
         PyErr_SetString(PyExc_TypeError, "invalid vertex in weight list");
         return NULL;
       }
-      const char* vertex_p = PyBytes_AsString(keyObject);
-      if (vertex_p == NULL) {
-        PyErr_SetString(PyExc_ValueError, "invalid vertex in weight list");
-        return NULL;
-      }
-      string vertex(vertex_p);
       if (!PyLong_Check(valObject)) {
         PyErr_SetString(PyExc_TypeError, "invalid weight in weight list");
         return NULL;
@@ -2460,30 +2584,8 @@ static PyObject* reliability(PyObject*, PyObject* args, PyObject* kwds) {
     PyErr_SetString(PyExc_TypeError, "no prob_list");
     return NULL;
   }
-  {
-    PyObject* i = PyObject_GetIter(prob_list_obj);
-    if (i == NULL) return NULL;
-    PyObject* p;
-    while ((p = PyIter_Next(i))) {
-      if (!PyFloat_Check(p)) {
-        PyErr_SetString(PyExc_TypeError, "invalid probability");
-        Py_DECREF(p);
-        Py_DECREF(i);
-        return NULL;
-      }
-      double prob = PyFloat_AsDouble(p);
-      Py_DECREF(p);
-      if (PyErr_Occurred()) {
-        Py_DECREF(i);
-        return NULL;
-      }
-      probabilities.push_back(prob);
-    }
-    if (PyErr_Occurred()) {
-      Py_DECREF(i);
-      return NULL;
-    }
-    Py_DECREF(i);
+  if (!setset_parse_list<double, true>(prob_list_obj, &probabilities)) {
+    return NULL;
   }
 
   if (terminals_obj == NULL || terminals_obj == Py_None) {
@@ -2495,33 +2597,19 @@ static PyObject* reliability(PyObject*, PyObject* args, PyObject* kwds) {
     return NULL;
   }
   vector<string> terminals;
-  {
-    PyObject* i = PyObject_GetIter(terminals_obj);
-    if (i == NULL) return NULL;
-    PyObject* term;
-    while ((term = PyIter_Next(i))) {
-      if (!PyBytes_Check(term)) {
-        PyErr_SetString(PyExc_TypeError, "invalid terminals");
-        Py_DECREF(term);
-        Py_DECREF(i);
-        return NULL;
-      }
-      terminals.push_back(PyBytes_AsString(term));
-      Py_DECREF(term);
-    }
-    if (PyErr_Occurred()) {
-      Py_DECREF(i);
-      return NULL;
-    }
-    Py_DECREF(i);
+  if (!setset_parse_string_list(terminals_obj, &terminals)) {
+    return NULL;
   }
 
-  auto prob = graphillion::reliability(graph, probabilities, terminals);
+  double prob = graphillion::reliability(graph, probabilities, terminals);
   return PyFloat_FromDouble(prob);
 }
 
 static PyObject* setset_get_vertices_from_top(PySetsetObject* self, PyObject* args) {
-  std::vector<std::vector<std::string>> edges = parse_args_to_edges(args);
+  std::vector<std::vector<std::string>> edges;
+  if (!parse_args_to_edges(args, &edges)) {
+    return NULL;
+  }
   std::vector<std::string> v_order_from_top = VariableConverter::get_vertices_from_top(edges);
   int n = static_cast<int>(v_order_from_top.size());
   PyObject* ret = PyList_New(n);
@@ -2545,86 +2633,6 @@ static PyObject* setset_get_vertices_from_top(PySetsetObject* self, PyObject* ar
 
 // directed version
 
-bool input_graph(PyObject* graph_obj,
-                 std::vector<std::pair<std::string, std::string> >& graph) {
-  if (graph_obj == NULL || graph_obj == Py_None) {
-    PyErr_SetString(PyExc_TypeError, "no graph");
-    return false;
-  }
-  PyObject* i = PyObject_GetIter(graph_obj);
-  if (i == NULL) return false;
-  PyObject* eo;
-  while ((eo = PyIter_Next(i))) {
-    PyObject* j = PyObject_GetIter(eo);
-    Py_DECREF(eo);
-    if (j == NULL) return false;
-    std::vector<std::string> e;
-    PyObject* vo;
-    while ((vo = PyIter_Next(j))) {
-      if (!PyBytes_Check(vo)) {
-        Py_DECREF(vo);
-        Py_DECREF(j);
-        Py_DECREF(i);
-        PyErr_SetString(PyExc_TypeError, "invalid graph");
-        return false;
-      }
-      std::string v = PyBytes_AsString(vo);
-      Py_DECREF(vo);
-      if (v.find(',') != std::string::npos) {
-        Py_DECREF(j);
-        Py_DECREF(i);
-        PyErr_SetString(PyExc_TypeError, "invalid vertex in the graph");
-        return false;
-      }
-      e.push_back(v);
-    }
-    Py_DECREF(j);
-    if (PyErr_Occurred()) {
-      return false;
-    }
-    if (e.size() != 2) {
-      Py_DECREF(i);
-      PyErr_SetString(PyExc_TypeError, "each edge must have "
-        "exactly two vertices");
-      return false;
-    }
-    graph.push_back(make_pair(e[0], e[1]));
-  }
-  Py_DECREF(i);
-  if (PyErr_Occurred()) {
-    return false;
-  }
-  return true;
-}
-
-bool input_string_list(PyObject* list_obj, std::vector<std::string>& list) {
-  if (list_obj == NULL || list_obj == Py_None) {
-    PyErr_SetString(PyExc_TypeError, "no input");
-    return false;
-  }
-
-  PyObject* i = PyObject_GetIter(list_obj);
-  if (i == NULL) return false;
-  PyObject* vo;
-  while ((vo = PyIter_Next(i))) {
-    if (!PyBytes_Check(vo)) {
-      PyErr_SetString(PyExc_TypeError, "invalid input");
-      Py_DECREF(vo);
-      Py_DECREF(i);
-      return false;
-    }
-    std::string v = PyBytes_AsString(vo);
-    Py_DECREF(vo);
-    if (v.find(',') != std::string::npos) {
-      PyErr_SetString(PyExc_TypeError, "invalid vertex in the graph");
-      Py_DECREF(i);
-      return false;
-    }
-    list.push_back(v);
-  }
-  Py_DECREF(i);
-  return true;
-}
 
 bool input_vertex_to_range_map(
     PyObject* map_obj, std::map<std::string, Range>& mp) {
@@ -2632,31 +2640,14 @@ bool input_vertex_to_range_map(
   PyObject* lo;
   Py_ssize_t pos = 0;
   while (PyDict_Next(map_obj, &pos, &vo, &lo)) {
-    if (!PyBytes_Check(vo)) {
-      PyErr_SetString(PyExc_TypeError, "invalid vertex in map object");
+    std::string vertex;
+    if (!setset_parse_string(vo, &vertex)) {
+      PyErr_SetString(PyExc_TypeError, "error converting vertex to string");
       return false;
     }
-    std::string vertex = PyBytes_AsString(vo);
-    PyObject* i = PyObject_GetIter(lo);
-    if (i == NULL) return false;
     std::vector<int> r;
-    PyObject* io;
-    while ((io = PyIter_Next(i))) {
-      if (!PyLong_Check(io)) {
-        Py_DECREF(io);
-        Py_DECREF(i);
-        PyErr_SetString(PyExc_TypeError, "invalid degree in map object");
-        return false;
-      }
-      long value = PyLong_AsLong(io);
-      if (PyErr_Occurred()) {
-        Py_DECREF(i);
-        return false;
-      }
-      r.push_back(value);
-    }
-    Py_DECREF(i);
-    if (PyErr_Occurred()) {
+    if (!setset_parse_list<int, false>(lo, &r)) {
+      PyErr_SetString(PyExc_TypeError, "error converting range in map object");
       return false;
     }
     if (r.size() != 3) {
@@ -2680,7 +2671,7 @@ static PyObject* graphset_directed_cycles(PyObject*, PyObject* args,
     return NULL;
 
   std::vector<std::pair<std::string, std::string> > graph;
-  if (!input_graph(graph_obj, graph)) {
+  if (!translate_graph(graph_obj, graph)) {
     return NULL;
   }
 
@@ -2711,7 +2702,7 @@ static PyObject* graphset_directed_hamiltonian_cycles(PyObject*, PyObject* args,
     return NULL;
 
   std::vector<std::pair<std::string, std::string> > graph;
-  if (!input_graph(graph_obj, graph)) {
+  if (!translate_graph(graph_obj, graph)) {
     return NULL;
   }
 
@@ -2749,7 +2740,7 @@ static PyObject* graphset_directed_st_path(PyObject*, PyObject* args,
     return NULL;
 
   std::vector<std::pair<std::string, std::string> > graph;
-  if (!input_graph(graph_obj, graph)) {
+  if (!translate_graph(graph_obj, graph)) {
     return NULL;
   }
 
@@ -2758,21 +2749,18 @@ static PyObject* graphset_directed_st_path(PyObject*, PyObject* args,
     PyErr_SetString(PyExc_TypeError, "no vertex s");
     return NULL;
   }
-  if (!PyBytes_Check(s_obj)) {
-    PyErr_SetString(PyExc_TypeError, "invalid vertex s");
-    return NULL;
-  }
-  s = PyBytes_AsString(s_obj);
-
   if (t_obj == NULL || t_obj == Py_None) {
     PyErr_SetString(PyExc_TypeError, "no vertex t");
     return NULL;
   }
-  if (!PyBytes_Check(t_obj)) {
+  if (!setset_parse_string(s_obj, &s)) {
+    PyErr_SetString(PyExc_TypeError, "invalid vertex s");
+    return NULL;
+  }
+  if (!setset_parse_string(t_obj, &t)) {
     PyErr_SetString(PyExc_TypeError, "invalid vertex t");
     return NULL;
   }
-  t = PyBytes_AsString(t_obj);
 
   graphillion::setset* search_space = NULL;
   if (search_space_obj != NULL && search_space_obj != Py_None) {
@@ -2805,13 +2793,13 @@ static PyObject* graphset_rooted_forests(PyObject*, PyObject* args,
     return NULL;
 
   std::vector<std::pair<std::string, std::string> > graph;
-  if (!input_graph(graph_obj, graph)) {
+  if (!translate_graph(graph_obj, graph)) {
     return NULL;
   }
 
   std::vector<std::string> roots;
   if (roots_obj != NULL && roots_obj != Py_None) {
-    if (!input_string_list(roots_obj, roots)) {
+    if (!setset_parse_string_list(roots_obj, &roots)) {
       return NULL;
     }
   }
@@ -2847,7 +2835,7 @@ static PyObject* graphset_rooted_trees(PyObject*, PyObject* args,
     return NULL;
 
   std::vector<std::pair<std::string, std::string> > graph;
-  if (!input_graph(graph_obj, graph)) {
+  if (!translate_graph(graph_obj, graph)) {
     return NULL;
   }
 
@@ -2856,11 +2844,10 @@ static PyObject* graphset_rooted_trees(PyObject*, PyObject* args,
     PyErr_SetString(PyExc_TypeError, "no vertex root");
     return NULL;
   }
-  if (!PyBytes_Check(root_obj)) {
+  if (!setset_parse_string(root_obj, &root)) {
     PyErr_SetString(PyExc_TypeError, "invalid vertex root");
     return NULL;
   }
-  root = PyBytes_AsString(root_obj);
 
   graphillion::setset* search_space = NULL;
   if (search_space_obj != NULL && search_space_obj != Py_None) {
@@ -2894,7 +2881,7 @@ static PyObject* graphset_directed_graphs(PyObject*, PyObject* args,
     return NULL;
 
   std::vector<std::pair<std::string, std::string> > graph;
-  if (!input_graph(graph_obj, graph)) {
+  if (!translate_graph(graph_obj, graph)) {
     return NULL;
   }
 
