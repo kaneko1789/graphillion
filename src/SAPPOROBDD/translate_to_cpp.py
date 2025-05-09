@@ -21,11 +21,44 @@ def convert_code(c_code):
 
     c_code = c_code.replace('static int  err B_ARG((char *msg, bddp num));',
                             'static int  err B_ARG((const char *msg, bddp num));')
-    c_code = c_code.replace('char *msg;', 'const char *msg;')
 
     # suppress the warning of "suggest braces
     # around initialization of subobject"
     c_code = c_code.replace('mptable[B_MP_LMAX] = {0}', 'mptable[B_MP_LMAX] = {{0}}')
+
+    # add some C++ headers
+    c_code = c_code.replace('#include <string.h>\n',
+                            '#include <string.h>\n' +
+                            '#include <stdexcept>\n' +
+                            '#include <new>\n')
+
+    c_code = c_code.replace('#define B_MALLOC(type, size) \\\n' +
+                            '  (type *)malloc(sizeof(type) * size)\n',
+                            '''static inline void* malloc_error_check(size_t size) {
+  void* p = malloc(size);
+  if (p == NULL) {
+    throw std::bad_alloc();
+  }
+  return p;
+}
+#define B_MALLOC(type, size) \\
+  (type *)malloc_error_check(sizeof(type) * size)
+''')
+
+    c_code = c_code.replace('static int err(msg, num)\nchar *msg;\nbddp num;\n{\n',
+                            '''static int err(msg, num)
+char *msg;
+bddp num;
+{
+  if (strstr(msg, "memory allocation") != NULL) {
+    throw std::bad_alloc();
+  } else {
+    throw std::runtime_error("BDD package inner error occurs.");
+  }
+
+''')
+
+    c_code = c_code.replace('char *msg;', 'const char *msg;')
 
     # change the function call style from the old style to ANSI style.
     # an example of the old style:

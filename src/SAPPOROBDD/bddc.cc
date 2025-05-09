@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdexcept>
+#include <new>
 #include "bddc.h"
 
 /* ----------------- MACRO Definitions ---------------- */
@@ -32,8 +34,15 @@
 #define BC_CARD2      19
 
 /* Macros for malloc, realloc */
+static inline void* malloc_error_check(size_t size) {
+  void* p = malloc(size);
+  if (p == NULL) {
+    throw std::bad_alloc();
+  }
+  return p;
+}
 #define B_MALLOC(type, size) \
-  (type *)malloc(sizeof(type) * size)
+  (type *)malloc_error_check(sizeof(type) * size)
 #define B_REALLOC(ptr, type, size) \
   (type *)realloc(ptr, sizeof(type) * size)
 
@@ -2616,6 +2625,12 @@ static int andfalse(bddp f, bddp g)
 
 static int err(const char *msg, bddp num)
 {
+  if (strstr(msg, "memory allocation") != NULL) {
+    throw std::bad_alloc();
+  } else {
+    throw std::runtime_error("BDD package inner error occurs.");
+  }
+
   fprintf(stderr,"***** ERROR  %s ( ", msg);
   fprintf(stderr, B_BDDP_FX, num);
   fprintf(stderr," ) *****\n");
