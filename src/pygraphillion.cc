@@ -1248,8 +1248,15 @@ static PyObject* setset_load(PySetsetObject* self, PyObject* obj) {
       // comment out Py_BEGIN_ALLOW_THREADS
       // because setset::load is not thread-safe
       // Py_BEGIN_ALLOW_THREADS;
-      ret->ss = new setset(setset::load(fp));
+      setset s1 = setset::load(fp);
       // Py_END_ALLOW_THREADS;
+      if (s1.is_null()) {
+        PyErr_SetString(PyExc_ValueError, "Failed to load setset");
+        Py_DECREF(ret);
+        fclose(fp);
+        return NULL;
+      }
+      ret->ss = new setset(s1);
     } catch (...) {
       Py_DECREF(ret);
       fclose(fp);
@@ -1281,7 +1288,13 @@ static PyObject* setset_loads(PySetsetObject* self, PyObject* obj) {
         return NULL;
       }
       stringstream sstr(utf8_str);
-      ret->ss = new setset(setset::load(sstr));
+      setset s1 = setset::load(sstr);
+      if (s1.is_null()) {
+        PyErr_SetString(PyExc_ValueError, "Failed to load setset");
+        Py_DECREF(ret);
+        return NULL;
+      }
+      ret->ss = new setset(s1);
     } catch (...) {
       Py_DECREF(ret);
       throw;

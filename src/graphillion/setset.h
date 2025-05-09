@@ -139,6 +139,7 @@ class setset {
   bool is_superset(const setset& ss) const;
 
   bool empty() const;
+  bool is_null() const;
   std::string size() const;
   iterator begin() const;
   random_iterator begin_randomly() const;

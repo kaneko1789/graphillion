@@ -266,6 +266,10 @@ bool setset::empty() const {
   return this->zdd_ == bot();
 }
 
+bool setset::is_null() const {
+  return this->zdd_ == null();
+}
+
 string setset::size() const {
   // need not offset because it just counts the number of elements
   //SapporoZdd f(this->zdd_, graphillion::max_elem() - graphillion::num_elems());
