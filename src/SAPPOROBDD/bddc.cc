@@ -2545,6 +2545,12 @@ static bddp getzbddp(bddvar v, bddp f0, bddp f1)
   return getnode(v, B_NOT(f0), f1);
 }
 
+// --- Expose a stable constructor for ZBDD node creation from level ---
+extern "C" bddp z_getnode(int lev, bddp f0, bddp f1) {
+    bddvar v = bddvaroflev(lev);
+    return getnode(v, f0, f1);
+}
+
 static int andfalse(bddp f, bddp g)
 {
   struct B_NodeTable *fp, *gp;

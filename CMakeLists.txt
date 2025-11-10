@@ -1,6 +1,6 @@
 MESSAGE(WARNING "To link with Python, just run setup.py without using cmake.")
 
-CMAKE_MINIMUM_REQUIRED(VERSION 2.6)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.10)
    
 PROJECT(graphillion)
 SET(${PROJECT_NAME}_MAJOR_VERSION 0)
